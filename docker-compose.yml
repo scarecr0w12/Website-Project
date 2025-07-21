@@ -1,132 +1,635 @@
+# Docker Compose v2 - System-Agnostic Viral Content Website
+# This configuration is designed to be portable across different host systems
+# and provides comprehensive orchestration for all services.
+
+name: viral-content-system
+
 services:
-  # Main application server
+  # Main web application - system-agnostic configuration
   web:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
+      args:
+        NODE_ENV: ${NODE_ENV:-production}
+        BUILDKIT_INLINE_CACHE: 1
+      platforms:
+        - linux/amd64
+        - linux/arm64
+      cache_from:
+        - viral-content-web:latest
+    image: viral-content-web:${VERSION:-latest}
     container_name: viral-content-web
-    ports:
-      - "${PORT:-3000}:3000"
-    environment:
-      - NODE_ENV=${NODE_ENV:-production}
-      - PORT=3000
-      - HOST=0.0.0.0
-      - DATABASE_PATH=/app/data/articles.db
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
-      - CONTENT_GENERATION_ENABLED=${CONTENT_GENERATION_ENABLED:-true}
-      - CONTENT_GENERATION_INTERVAL=${CONTENT_GENERATION_INTERVAL:-3600000}
-      - MAX_ARTICLES_PER_DAY=${MAX_ARTICLES_PER_DAY:-24}
-      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
-      - ANALYTICS_ENABLED=${ANALYTICS_ENABLED:-true}
-      - PERFORMANCE_TRACKING=${PERFORMANCE_TRACKING:-true}
-      - API_RATE_LIMIT=${API_RATE_LIMIT:-100}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
-    volumes:
-      # Persistent database storage
-      - ./data:/app/data
-      # Generated content backup
-      - ./generated-content:/app/generated-content
-      # Logs directory
-      - ./logs:/app/logs
+    hostname: viral-content-web
     restart: unless-stopped
+    init: true
+    ports:
+      - target: 3000
+        published: ${PORT:-3000}
+        protocol: tcp
+        mode: host
+    environment:
+      # Application Configuration - System Agnostic
+      NODE_ENV: ${NODE_ENV:-production}
+      NODE_OPTIONS: "--max-old-space-size=1024"
+      PORT: 3000
+      HOST: 0.0.0.0
+      TZ: ${TIMEZONE:-UTC}
+      
+      # Internal API Configuration
+      API_BASE_URL: http://web:3000/api/v1
+      DATABASE_PATH: /app/data/articles.db
+      
+      # LLM Configuration - Platform Independent
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1500}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      
+      # Content Generation - Environment Agnostic
+      CONTENT_GENERATION_ENABLED: ${CONTENT_GENERATION_ENABLED:-true}
+      CONTENT_GENERATION_INTERVAL: ${CONTENT_GENERATION_INTERVAL:-3600000}
+      MAX_ARTICLES_PER_DAY: ${MAX_ARTICLES_PER_DAY:-24}
+      CONTENT_TOPICS: ${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      
+      # Performance & Analytics - Cross-Platform
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-true}
+      PERFORMANCE_TRACKING: ${PERFORMANCE_TRACKING:-true}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-1000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      
+      # Security Configuration - System Independent
+      ADMIN_ENABLED: ${ADMIN_ENABLED:-true}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-your-secret-key-here}
+      
+      # Enterprise Analytics - Multi-Platform Support
+      GOOGLE_ANALYTICS_ID: ${GOOGLE_ANALYTICS_ID}
+      SALESFORCE_CLIENT_ID: ${SALESFORCE_CLIENT_ID}
+      SALESFORCE_CLIENT_SECRET: ${SALESFORCE_CLIENT_SECRET}
+      HUBSPOT_API_KEY: ${HUBSPOT_API_KEY}
+      MIXPANEL_PROJECT_TOKEN: ${MIXPANEL_PROJECT_TOKEN}
+    
+    volumes:
+      # Named volumes for system-agnostic persistence
+      - type: volume
+        source: app-data
+        target: /app/data
+        volume:
+          nocopy: false
+      - type: volume
+        source: generated-content
+        target: /app/generated-content
+        volume:
+          nocopy: false
+      - type: volume
+        source: app-logs
+        target: /app/logs
+        volume:
+          nocopy: false
+      # Bind mount for backups - with consistent permissions
+      - type: bind
+        source: ${BACKUP_PATH:-./backups}
+        target: /app/backups
+        bind:
+          create_host_path: true
+    
+    tmpfs:
+      # Temporary filesystem for cache - system agnostic
+      - /tmp:size=100M,noexec,nosuid,nodev
+      - /app/tmp:size=50M,noexec,nosuid,nodev
+    
     healthcheck:
-      test: ["CMD", "node", "healthcheck.js"]
+      test: ["CMD-SHELL", "node healthcheck.js || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 40s
+      
+    security_opt:
+      - no-new-privileges:true
+    
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    
     depends_on:
-      - content-scheduler
+      content-scheduler:
+        condition: service_healthy
+        restart: true
+    
     networks:
       - viral-content-network
+      - analytics-network
+    
+    labels:
+      com.viral-content.service: "web"
+      com.viral-content.version: "${VERSION:-latest}"
+      com.viral-content.environment: "${NODE_ENV:-production}"
 
-  # Content generation scheduler service
+  # Content generation scheduler - enhanced system-agnostic service
   content-scheduler:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.scheduler
+      args:
+        NODE_ENV: ${NODE_ENV:-production}
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: viral-content-scheduler:${VERSION:-latest}
     container_name: viral-content-scheduler
-    environment:
-      - NODE_ENV=${NODE_ENV:-production}
-      - API_BASE_URL=http://web:3000/api/v1
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
-      - CONTENT_GENERATION_INTERVAL=${CONTENT_GENERATION_INTERVAL:-3600000}
-      - MAX_ARTICLES_PER_DAY=${MAX_ARTICLES_PER_DAY:-24}
-      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
-    volumes:
-      # Share generated content with main app
-      - ./generated-content:/app/generated-content
-      - ./logs:/app/logs
+    hostname: viral-content-scheduler
     restart: unless-stopped
+    init: true
+    environment:
+      # Scheduler Configuration - Platform Independent
+      NODE_ENV: ${NODE_ENV:-production}
+      NODE_OPTIONS: "--max-old-space-size=512"
+      TZ: ${TIMEZONE:-UTC}
+      
+      # API Configuration
+      API_BASE_URL: http://web:3000/api/v1
+      
+      # LLM Configuration - System Agnostic
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1500}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      
+      # Content Generation Settings
+      CONTENT_GENERATION_ENABLED: ${CONTENT_GENERATION_ENABLED:-true}
+      CONTENT_GENERATION_INTERVAL: ${CONTENT_GENERATION_INTERVAL:-3600000}
+      MAX_ARTICLES_PER_DAY: ${MAX_ARTICLES_PER_DAY:-24}
+      CONTENT_TOPICS: ${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      
+      # Scheduler-specific settings
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_INTERVAL: ${SCHEDULER_INTERVAL:-1800000}
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-300000}
+    
+    volumes:
+      - type: volume
+        source: generated-content
+        target: /app/generated-content
+        volume:
+          nocopy: false
+      - type: volume
+        source: scheduler-logs
+        target: /app/logs
+        volume:
+          nocopy: false
+    
+    tmpfs:
+      - /tmp:size=50M,noexec,nosuid,nodev
+    
+    healthcheck:
+      test: ["CMD-SHELL", "node /app/scripts/scheduler-health.js || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    ulimits:
+      nproc: 32768
+      nofile:
+        soft: 32768
+        hard: 32768
+    
+    networks:
+      - viral-content-network
+    
+    labels:
+      com.viral-content.service: "scheduler"
+      com.viral-content.version: "${VERSION:-latest}"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  # Nginx reverse proxy - system-agnostic load balancer
+  nginx:
+    image: nginx:${NGINX_VERSION:-1.25-alpine}
+    container_name: viral-content-nginx
+    hostname: viral-content-nginx
+    restart: unless-stopped
+    init: true
+    ports:
+      - target: 80
+        published: ${HTTP_PORT:-80}
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: ${HTTPS_PORT:-443}
+        protocol: tcp
+        mode: host
+    environment:
+      TZ: ${TIMEZONE:-UTC}
+      NGINX_WORKER_PROCESSES: ${NGINX_WORKERS:-auto}
+      NGINX_WORKER_CONNECTIONS: ${NGINX_CONNECTIONS:-1024}
+    
+    volumes:
+      # Configuration with platform-independent paths
+      - type: bind
+        source: ${NGINX_CONFIG_PATH:-./nginx/nginx.conf}
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind:
+          create_host_path: true
+      # SSL certificates - system agnostic
+      - type: volume
+        source: nginx-certs
+        target: /etc/nginx/certs
+        volume:
+          nocopy: false
+      # Logs
+      - type: volume
+        source: nginx-logs
+        target: /var/log/nginx
+        volume:
+          nocopy: false
+    
+    tmpfs:
+      - /var/cache/nginx:size=100M,noexec,nosuid,nodev
+      - /tmp:size=50M,noexec,nosuid,nodev
+    
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:80/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    ulimits:
+      nproc: 16384
+      nofile:
+        soft: 16384
+        hard: 16384
+    
     depends_on:
       web:
         condition: service_healthy
+        restart: true
+    
     networks:
       - viral-content-network
-
-  # Reverse proxy for production (optional)
-  nginx:
-    image: nginx:alpine
-    container_name: viral-content-proxy
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - ./logs/nginx:/var/log/nginx
-    restart: unless-stopped
-    depends_on:
-      - web
-    networks:
-      - viral-content-network
+      - external-network
+    
     profiles:
+      - nginx
       - production
+    
+    labels:
+      com.viral-content.service: "nginx"
+      com.viral-content.version: "${NGINX_VERSION:-1.25-alpine}"
+      com.viral-content.environment: "${NODE_ENV:-production}"
 
-  # Monitoring and analytics (optional)
-  analytics:
-    image: umami/umami:postgresql-latest
-    container_name: viral-content-analytics
-    environment:
-      - DATABASE_URL=postgresql://umami:umami@analytics-db:5432/umami
-      - HASH_SALT=${ANALYTICS_HASH_SALT:-your-random-salt}
-    ports:
-      - "3001:3000"
-    depends_on:
-      - analytics-db
-    restart: unless-stopped
-    networks:
-      - viral-content-network
-    profiles:
-      - analytics
-
-  # Analytics database
+  # Analytics Database - System-agnostic PostgreSQL
   analytics-db:
-    image: postgres:15-alpine
+    image: postgres:${POSTGRES_VERSION:-15-alpine}
     container_name: viral-content-analytics-db
-    environment:
-      - POSTGRES_DB=umami
-      - POSTGRES_USER=umami
-      - POSTGRES_PASSWORD=umami
-    volumes:
-      - analytics-data:/var/lib/postgresql/data
+    hostname: viral-content-analytics-db
     restart: unless-stopped
+    init: true
+    environment:
+      POSTGRES_DB: ${ANALYTICS_DB_NAME:-umami}
+      POSTGRES_USER: ${ANALYTICS_DB_USER:-umami}
+      POSTGRES_PASSWORD: ${ANALYTICS_DB_PASSWORD:-umami}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: ${TIMEZONE:-UTC}
+    
+    volumes:
+      - type: volume
+        source: analytics-db-data
+        target: /var/lib/postgresql/data
+        volume:
+          nocopy: false
+      # Backup directory with consistent permissions
+      - type: bind
+        source: ${ANALYTICS_BACKUP_PATH:-./backups/analytics}
+        target: /backup
+        bind:
+          create_host_path: true
+    
+    tmpfs:
+      - /tmp:size=100M,noexec,nosuid,nodev
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ANALYTICS_DB_USER:-umami} -d ${ANALYTICS_DB_NAME:-umami}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    ulimits:
+      nproc: 32768
+      nofile:
+        soft: 32768
+        hard: 32768
+    
     networks:
-      - viral-content-network
+      - analytics-network
+    
     profiles:
       - analytics
+      - production
+    
+    labels:
+      com.viral-content.service: "analytics-db"
+      com.viral-content.version: "${POSTGRES_VERSION:-15-alpine}"
+      com.viral-content.environment: "${NODE_ENV:-production}"
 
+  # Analytics Service - System-agnostic Umami
+  analytics:
+    image: ghcr.io/umami-software/umami:${UMAMI_VERSION:-postgresql-latest}
+    container_name: viral-content-analytics
+    hostname: viral-content-analytics
+    restart: unless-stopped
+    init: true
+    ports:
+      - target: 3000
+        published: ${ANALYTICS_PORT:-3001}
+        protocol: tcp
+        mode: host
+    environment:
+      DATABASE_URL: postgresql://${ANALYTICS_DB_USER:-umami}:${ANALYTICS_DB_PASSWORD:-umami}@analytics-db:5432/${ANALYTICS_DB_NAME:-umami}
+      DATABASE_TYPE: postgresql
+      APP_SECRET: ${ANALYTICS_APP_SECRET:-replace-me-with-a-random-string}
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-CF-Connecting-IP}
+      DISABLE_TELEMETRY: ${DISABLE_TELEMETRY:-1}
+      TZ: ${TIMEZONE:-UTC}
+    
+    volumes:
+      - type: volume
+        source: analytics-data
+        target: /app/.next/cache
+        volume:
+          nocopy: false
+    
+    tmpfs:
+      - /tmp:size=100M,noexec,nosuid,nodev
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/heartbeat || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    ulimits:
+      nproc: 16384
+      nofile:
+        soft: 16384
+        hard: 16384
+    
+    depends_on:
+      analytics-db:
+        condition: service_healthy
+        restart: true
+    
+    networks:
+      - analytics-network
+      - viral-content-network
+    
+    profiles:
+      - analytics
+      - production
+    
+    labels:
+      com.viral-content.service: "analytics"
+      com.viral-content.version: "${UMAMI_VERSION:-postgresql-latest}"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  # Backup Service - System-agnostic automated backups
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backup
+    image: viral-content-backup:${VERSION:-latest}
+    container_name: viral-content-backup
+    hostname: viral-content-backup
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      TZ: ${TIMEZONE:-UTC}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      ANALYTICS_DB_USER: ${ANALYTICS_DB_USER:-umami}
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD:-umami}
+      ANALYTICS_DB_NAME: ${ANALYTICS_DB_NAME:-umami}
+    
+    volumes:
+      # Application data to backup
+      - type: volume
+        source: app-data
+        target: /backup-source/data
+        read_only: true
+      - type: volume
+        source: generated-content
+        target: /backup-source/content
+        read_only: true
+      # Backup destination with consistent permissions
+      - type: bind
+        source: ${BACKUP_PATH:-./backups}
+        target: /backups
+        bind:
+          create_host_path: true
+      # Analytics backup
+      - type: bind
+        source: ${ANALYTICS_BACKUP_PATH:-./backups/analytics}
+        target: /backups/analytics
+        bind:
+          create_host_path: true
+    
+    tmpfs:
+      - /tmp:size=500M,noexec,nosuid,nodev
+    
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/backup-health || exit 1"]
+      interval: 300s
+      timeout: 30s
+      retries: 2
+      start_period: 60s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    depends_on:
+      web:
+        condition: service_healthy
+        restart: false
+      analytics-db:
+        condition: service_healthy
+        restart: false
+    
+    networks:
+      - viral-content-network
+      - analytics-network
+    
+    profiles:
+      - backup
+      - production
+    
+    labels:
+      com.viral-content.service: "backup"
+      com.viral-content.version: "${VERSION:-latest}"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+# System-agnostic network configuration
 networks:
   viral-content-network:
+    name: viral-content-network-${COMPOSE_PROJECT_NAME:-default}
     driver: bridge
-    name: viral-content-network
+    driver_opts:
+      com.docker.network.bridge.name: br-viral-content
+      com.docker.network.bridge.enable_ip_masquerade: 'true'
+    ipam:
+      driver: default
+      config:
+        - subnet: ${INTERNAL_SUBNET:-172.20.0.0/16}
+          gateway: ${INTERNAL_GATEWAY:-172.20.0.1}
+    labels:
+      com.viral-content.network: "internal"
+      com.viral-content.environment: "${NODE_ENV:-production}"
 
+  analytics-network:
+    name: analytics-network-${COMPOSE_PROJECT_NAME:-default}
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-analytics
+      com.docker.network.bridge.enable_ip_masquerade: 'true'
+    ipam:
+      driver: default
+      config:
+        - subnet: ${ANALYTICS_SUBNET:-172.21.0.0/16}
+          gateway: ${ANALYTICS_GATEWAY:-172.21.0.1}
+    labels:
+      com.viral-content.network: "analytics"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  external-network:
+    name: external-network-${COMPOSE_PROJECT_NAME:-default}
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-external
+    ipam:
+      driver: default
+      config:
+        - subnet: ${EXTERNAL_SUBNET:-172.22.0.0/16}
+          gateway: ${EXTERNAL_GATEWAY:-172.22.0.1}
+    labels:
+      com.viral-content.network: "external"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+# System-agnostic volume configuration with labels
 volumes:
-  analytics-data:
+  app-data:
+    name: viral-content-app-data-${COMPOSE_PROJECT_NAME:-default}
     driver: local
+    driver_opts:
+      type: ${VOLUME_TYPE:-none}
+      o: bind
+      device: ${DATA_PATH:-${PWD}/data}
+    labels:
+      com.viral-content.volume: "app-data"
+      com.viral-content.backup: "true"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  generated-content:
+    name: viral-content-generated-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    driver_opts:
+      type: ${VOLUME_TYPE:-none}
+      o: bind
+      device: ${CONTENT_PATH:-${PWD}/generated-content}
+    labels:
+      com.viral-content.volume: "generated-content"
+      com.viral-content.backup: "true"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  app-logs:
+    name: viral-content-logs-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    driver_opts:
+      type: ${VOLUME_TYPE:-none}
+      o: bind
+      device: ${LOGS_PATH:-${PWD}/logs}
+    labels:
+      com.viral-content.volume: "app-logs"
+      com.viral-content.backup: "false"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  scheduler-logs:
+    name: viral-content-scheduler-logs-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    labels:
+      com.viral-content.volume: "scheduler-logs"
+      com.viral-content.backup: "false"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  nginx-certs:
+    name: viral-content-nginx-certs-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    labels:
+      com.viral-content.volume: "nginx-certs"
+      com.viral-content.backup: "true"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  nginx-logs:
+    name: viral-content-nginx-logs-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    labels:
+      com.viral-content.volume: "nginx-logs"
+      com.viral-content.backup: "false"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  analytics-db-data:
+    name: viral-content-analytics-db-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    labels:
+      com.viral-content.volume: "analytics-db-data"
+      com.viral-content.backup: "true"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+  analytics-data:
+    name: viral-content-analytics-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    labels:
+      com.viral-content.volume: "analytics-data"
+      com.viral-content.backup: "false"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+# Configuration for different deployment targets
+configs:
+  nginx-config:
+    file: ${NGINX_CONFIG_PATH:-./nginx/nginx.conf}
+    labels:
+      com.viral-content.config: "nginx"
+      com.viral-content.environment: "${NODE_ENV:-production}"
+
+# Secrets for secure configuration management
+secrets:
+  llm-api-key:
+    name: viral-content-llm-api-key
+    external: true
+  admin-session-secret:
+    name: viral-content-admin-session-secret
+    external: true
+  analytics-db-password:
+    name: viral-content-analytics-db-password
+    external: true

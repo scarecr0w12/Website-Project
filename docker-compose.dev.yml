@@ -1,78 +1,327 @@
+# Docker Compose v2 - System-Agnostic Development Environment
+# Optimized for cross-platform development with hot reload and debugging capabilities
+
+name: viral-content-dev
+
 services:
-  # Development web server with hot reload
+  # Development web server with hot reload - system agnostic
   web:
     build: 
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        NODE_ENV: development
+        BUILDKIT_INLINE_CACHE: 1
+      platforms:
+        - linux/amd64
+        - linux/arm64
+      cache_from:
+        - viral-content-web-dev:latest
+    image: viral-content-web-dev:${VERSION:-latest}
     container_name: viral-content-web-dev
-    ports:
-      - "${PORT:-3000}:3000"
-    environment:
-      - NODE_ENV=development
-      - PORT=3000
-      - HOST=0.0.0.0
-      - API_BASE_URL=http://127.0.0.1:3000/api/v1
-      - DATABASE_PATH=/app/data/articles.db
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
-      - CONTENT_GENERATION_ENABLED=${CONTENT_GENERATION_ENABLED:-true}
-      - CONTENT_GENERATION_INTERVAL=${CONTENT_GENERATION_INTERVAL:-3600000}
-      - MAX_ARTICLES_PER_DAY=${MAX_ARTICLES_PER_DAY:-24}
-      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
-      - ANALYTICS_ENABLED=${ANALYTICS_ENABLED:-true}
-      - PERFORMANCE_TRACKING=${PERFORMANCE_TRACKING:-true}
-      - API_RATE_LIMIT=${API_RATE_LIMIT:-1000}
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
-    volumes:
-      # Mount source code for hot reload
-      - .:/app
-      - /app/node_modules
-      # Persistent data
-      - ./data:/app/data
-      - ./generated-content:/app/generated-content
-      - ./logs:/app/logs
+    hostname: viral-content-web-dev
     restart: unless-stopped
-    command: npm run dev
+    init: true
+    ports:
+      - target: 3000
+        published: ${PORT:-3000}
+        protocol: tcp
+        mode: host
+      # Debug port for Node.js inspector
+      - target: 9229
+        published: ${DEBUG_PORT:-9229}
+        protocol: tcp
+        mode: host
+    environment:
+      # Development Configuration - Platform Independent
+      NODE_ENV: development
+      NODE_OPTIONS: "--inspect=0.0.0.0:9229 --max-old-space-size=2048"
+      PORT: 3000
+      HOST: 0.0.0.0
+      TZ: ${TIMEZONE:-UTC}
+      
+      # Hot reload and development features
+      CHOKIDAR_USEPOLLING: ${CHOKIDAR_USEPOLLING:-true}
+      WATCHPACK_POLLING: ${WATCHPACK_POLLING:-true}
+      
+      # API Configuration
+      API_BASE_URL: http://127.0.0.1:3000/api/v1
+      DATABASE_PATH: /app/data/articles.db
+      
+      # LLM Configuration - Development
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1500}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      
+      # Content Generation - Development Mode
+      CONTENT_GENERATION_ENABLED: ${CONTENT_GENERATION_ENABLED:-true}
+      CONTENT_GENERATION_INTERVAL: ${CONTENT_GENERATION_INTERVAL:-3600000}
+      MAX_ARTICLES_PER_DAY: ${MAX_ARTICLES_PER_DAY:-24}
+      CONTENT_TOPICS: ${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      
+      # Performance & Analytics - Development
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-true}
+      PERFORMANCE_TRACKING: ${PERFORMANCE_TRACKING:-true}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-1000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      
+      # Development-specific logging
+      DEBUG: ${DEBUG:-viral-content:*}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    
+    volumes:
+      # Source code mounting for hot reload - system agnostic
+      - type: bind
+        source: ${PWD}
+        target: /app
+        bind:
+          create_host_path: false
+        consistency: ${MOUNT_CONSISTENCY:-cached}
+      # Anonymous volume for node_modules to prevent conflicts
+      - type: volume
+        source: node-modules-cache
+        target: /app/node_modules
+        volume:
+          nocopy: false
+      # Development data persistence
+      - type: bind
+        source: ${DATA_PATH:-./data}
+        target: /app/data
+        bind:
+          create_host_path: true
+        consistency: consistent
+      - type: bind
+        source: ${CONTENT_PATH:-./generated-content}
+        target: /app/generated-content
+        bind:
+          create_host_path: true
+        consistency: consistent
+      - type: bind
+        source: ${LOGS_PATH:-./logs}
+        target: /app/logs
+        bind:
+          create_host_path: true
+        consistency: consistent
+    
+    tmpfs:
+      # Development cache - system agnostic
+      - /tmp:size=200M,noexec,nosuid,nodev
+      - /app/.next:size=100M,noexec,nosuid,nodev
+    
+    command: >
+      sh -c "
+        echo 'Starting development server with hot reload...';
+        npm run dev
+      "
+    
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    
     networks:
       - viral-content-dev-network
+    
+    labels:
+      com.viral-content.service: "web-dev"
+      com.viral-content.version: "${VERSION:-latest}"
+      com.viral-content.environment: "development"
 
-  # Development tools container
+  # Development tools container - system agnostic utility service
   tools:
     build: 
       context: .
       dockerfile: Dockerfile.dev
+      target: tools
+      args:
+        NODE_ENV: development
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: viral-content-tools-dev:${VERSION:-latest}
     container_name: viral-content-tools-dev
+    hostname: viral-content-tools-dev
+    restart: unless-stopped
+    init: true
     environment:
-      - NODE_ENV=development
-      - API_BASE_URL=http://web:3000/api/v1
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
-      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      # Tools Configuration - Platform Independent
+      NODE_ENV: development
+      TZ: ${TIMEZONE:-UTC}
+      
+      # API Configuration
+      API_BASE_URL: http://web:3000/api/v1
+      
+      # LLM Configuration
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1500}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      CONTENT_TOPICS: ${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      
+      # Development tools configuration
+      DEBUG: ${DEBUG:-viral-content:tools}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    
     volumes:
-      - .:/app
-      - /app/node_modules
-      - ./generated-content:/app/generated-content
-      - ./logs:/app/logs
-    command: tail -f /dev/null  # Keep container running
+      # Source code for development tools
+      - type: bind
+        source: ${PWD}
+        target: /app
+        bind:
+          create_host_path: false
+        consistency: ${MOUNT_CONSISTENCY:-cached}
+      # Node modules cache
+      - type: volume
+        source: node-modules-cache
+        target: /app/node_modules
+        volume:
+          nocopy: false
+      # Generated content access
+      - type: bind
+        source: ${CONTENT_PATH:-./generated-content}
+        target: /app/generated-content
+        bind:
+          create_host_path: true
+        consistency: consistent
+      # Logs access
+      - type: bind
+        source: ${LOGS_PATH:-./logs}
+        target: /app/logs
+        bind:
+          create_host_path: true
+        consistency: consistent
+    
+    tmpfs:
+      - /tmp:size=100M,noexec,nosuid,nodev
+    
+    command: >
+      sh -c "
+        echo 'Development tools container ready...';
+        echo 'Available commands:';
+        echo '  docker compose exec tools npm run test';
+        echo '  docker compose exec tools node scripts/generate-content.js';
+        echo '  docker compose exec tools npm run lint';
+        tail -f /dev/null
+      "
+    
+    healthcheck:
+      test: ["CMD-SHELL", "node --version"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    
+    security_opt:
+      - no-new-privileges:true
+    
     depends_on:
       web:
         condition: service_healthy
+        restart: true
+    
     networks:
       - viral-content-dev-network
+    
     profiles:
       - tools
+      - development
+    
+    labels:
+      com.viral-content.service: "tools-dev"
+      com.viral-content.version: "${VERSION:-latest}"
+      com.viral-content.environment: "development"
 
+  # Development database browser - system agnostic database management
+  db-browser:
+    image: adminer:${ADMINER_VERSION:-4.8.1}
+    container_name: viral-content-db-browser-dev
+    hostname: viral-content-db-browser-dev
+    restart: unless-stopped
+    init: true
+    ports:
+      - target: 8080
+        published: ${DB_BROWSER_PORT:-8080}
+        protocol: tcp
+        mode: host
+    environment:
+      ADMINER_DEFAULT_SERVER: sqlite:////data/articles.db
+      ADMINER_DESIGN: ${ADMINER_DESIGN:-hydra}
+      TZ: ${TIMEZONE:-UTC}
+    
+    volumes:
+      # Database access - read-only for safety
+      - type: bind
+        source: ${DATA_PATH:-./data}
+        target: /data
+        read_only: true
+        bind:
+          create_host_path: true
+    
+    tmpfs:
+      - /tmp:size=50M,noexec,nosuid,nodev
+    
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    depends_on:
+      web:
+        condition: service_healthy
+        restart: false
+    
+    networks:
+      - viral-content-dev-network
+    
+    profiles:
+      - database
+      - development
+    
+    labels:
+      com.viral-content.service: "db-browser-dev"
+      com.viral-content.version: "${ADMINER_VERSION:-4.8.1}"
+      com.viral-content.environment: "development"
+
+# System-agnostic development network
 networks:
   viral-content-dev-network:
+    name: viral-content-dev-network-${COMPOSE_PROJECT_NAME:-default}
     driver: bridge
-    name: viral-content-dev-network
+    driver_opts:
+      com.docker.network.bridge.name: br-viral-dev
+      com.docker.network.bridge.enable_ip_masquerade: 'true'
+    ipam:
+      driver: default
+      config:
+        - subnet: ${DEV_SUBNET:-172.25.0.0/16}
+          gateway: ${DEV_GATEWAY:-172.25.0.1}
+    labels:
+      com.viral-content.network: "development"
+      com.viral-content.environment: "development"
+
+# System-agnostic development volumes
+volumes:
+  node-modules-cache:
+    name: viral-content-node-modules-${COMPOSE_PROJECT_NAME:-default}
+    driver: local
+    labels:
+      com.viral-content.volume: "node-modules-cache"
+      com.viral-content.backup: "false"
+      com.viral-content.environment: "development"

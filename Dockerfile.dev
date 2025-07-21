@@ -1,30 +1,177 @@
-# Development Dockerfile with hot reload and development tools
-FROM node:18-alpine
+# Multi-stage development Dockerfile for system-agnostic development
+# Optimized for hot reload, debugging, and cross-platform compatibility
 
-# Install curl for health checks
-RUN apk add --no-cache curl
+# =============================================================================
+# Base development stage
+# =============================================================================
+FROM node:18-alpine AS base-dev
 
-# Set the working directory in the container
+# Install system dependencies for development
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    wget \
+    git \
+    openssh-client \
+    ca-certificates \
+    tzdata \
+    sqlite \
+    && rm -rf /var/cache/apk/*
+
+# Set development environment
+ENV NODE_ENV=development
+ENV NODE_OPTIONS="--inspect=0.0.0.0:9229 --max-old-space-size=2048"
+
+# Create app directory with proper permissions
 WORKDIR /app
 
-# Copy package.json and package-lock.json (if available)
+# Create non-root user for security (compatible across platforms)
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nextjs -u 1001 -G nodejs
+
+# =============================================================================
+# Development dependencies stage
+# =============================================================================
+FROM base-dev AS dev-deps
+
+# Copy package files for dependency installation
 COPY package*.json ./
 
-# Install all dependencies (including dev dependencies)
-RUN npm ci
+# Install all dependencies including dev
+RUN npm ci && \
+    npm cache clean --force
 
-# Create app directory (node user already exists with UID 1000)
-RUN mkdir -p /app/data /app/generated-content /app/logs
+# =============================================================================
+# Main development stage
+# =============================================================================
+FROM base-dev AS development
 
-# Copy the rest of the application code
-COPY . .
+# Copy dependencies from previous stage
+COPY --from=dev-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --chown=nextjs:nodejs package*.json ./
 
-# Change ownership of the app directory to the node user
-RUN chown -R node:node /app
-USER node
+# Create necessary directories with proper permissions
+RUN mkdir -p data generated-content logs backups tmp tools && \
+    chown -R nextjs:nodejs /app
 
-# Expose the port the app runs on
-EXPOSE 3000
+# Copy application source (will be overridden by bind mount in development)
+COPY --chown=nextjs:nodejs . .
 
-# Default command to start the development server
+# Switch to non-root user
+USER nextjs
+
+# Expose application and debug ports
+EXPOSE 3000 9229
+
+# Health check optimized for development
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:3000/api/v1/health || exit 1
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start development server with hot reload
 CMD ["npm", "run", "dev"]
+
+# =============================================================================
+# Tools stage - development utilities
+# =============================================================================
+FROM dev-deps AS tools
+
+# Install additional development tools
+RUN npm install -g \
+    nodemon \
+    pm2 \
+    mocha \
+    jest \
+    eslint \
+    prettier \
+    npm-check-updates \
+    concurrently \
+    && npm cache clean --force
+
+# Create tools workspace
+RUN mkdir -p /app/tools && \
+    chown -R nextjs:nodejs /app
+
+# Copy source code
+COPY --chown=nextjs:nodejs . .
+
+# Switch to non-root user
+USER nextjs
+
+# Create startup script for tools container
+RUN echo '#!/bin/sh' > /app/tools/startup.sh && \
+    echo 'echo "=== Development Tools Container ==="' >> /app/tools/startup.sh && \
+    echo 'echo "Available commands:"' >> /app/tools/startup.sh && \
+    echo 'echo "  npm run test          - Run tests"' >> /app/tools/startup.sh && \
+    echo 'echo "  npm run lint          - Run linter"' >> /app/tools/startup.sh && \
+    echo 'echo "  npm run format        - Format code"' >> /app/tools/startup.sh && \
+    echo 'echo "  node scripts/generate-content.js - Generate content"' >> /app/tools/startup.sh && \
+    echo 'echo "  npm audit             - Security audit"' >> /app/tools/startup.sh && \
+    echo 'echo "  ncu                   - Check for updates"' >> /app/tools/startup.sh && \
+    echo 'echo "===================================="' >> /app/tools/startup.sh && \
+    echo 'tail -f /dev/null' >> /app/tools/startup.sh && \
+    chmod +x /app/tools/startup.sh
+
+# Health check for tools container
+HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=2 \
+    CMD node --version
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start tools container
+CMD ["/app/tools/startup.sh"]
+
+# =============================================================================
+# Testing stage - optimized for CI/CD
+# =============================================================================
+FROM dev-deps AS testing
+
+# Install testing-specific dependencies
+RUN npm install -g \
+    nyc \
+    c8 \
+    supertest \
+    && npm cache clean --force
+
+# Copy source code
+COPY --chown=nextjs:nodejs . .
+
+# Create test directories
+RUN mkdir -p coverage test-results && \
+    chown -R nextjs:nodejs /app
+
+# Switch to non-root user
+USER nextjs
+
+# Health check for testing
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=2 \
+    CMD node --version
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+
+# Default command for testing
+CMD ["npm", "test"]
+
+# =============================================================================
+# Labels for better container management
+# =============================================================================
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION=latest
+
+LABEL maintainer="Viral Content Team" \
+      org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="viral-content-website-dev" \
+      org.label-schema.description="System-agnostic development environment" \
+      org.label-schema.url="https://github.com/viral-content/website" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/viral-content/website" \
+      org.label-schema.vendor="Viral Content Team" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0" \
+      com.viral-content.component="development-environment" \
+      com.viral-content.platform="multi-arch"
