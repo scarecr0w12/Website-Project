@@ -4,7 +4,7 @@
 # =============================================================================
 # Base stage - common foundation for all stages
 # =============================================================================
-FROM node:18-alpine AS base
+FROM node:24-alpine AS base
 
 # Install system dependencies for cross-platform compatibility
 RUN apk add --no-cache \
