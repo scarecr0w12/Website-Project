@@ -63,6 +63,31 @@ class AuthManager {
             )
         `;
 
+        const passwordResetTableSQL = `
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT UNIQUE NOT NULL,
+                user_id INTEGER NOT NULL,
+                expires_at DATETIME NOT NULL,
+                used INTEGER DEFAULT 0,
+                used_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES admin_users (id)
+            )
+        `;
+
+        const settingsTableSQL = `
+            CREATE TABLE IF NOT EXISTS admin_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(category, key)
+            )
+        `;
+
         const auditTableSQL = `
             CREATE TABLE IF NOT EXISTS admin_audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +105,8 @@ class AuthManager {
             // Use the database query method instead of exec
             await this.db.query(userTableSQL);
             await this.db.query(sessionTableSQL);
+            await this.db.query(passwordResetTableSQL);
+            await this.db.query(settingsTableSQL);
             await this.db.query(auditTableSQL);
             
             // Create default admin user if none exists
@@ -468,8 +495,59 @@ class AuthManager {
     }
 
     /**
-     * Audit logging
+     * Settings management
      */
+    async getSetting(category, key) {
+        const setting = await this.db.get(`
+            SELECT value FROM admin_settings 
+            WHERE category = ? AND key = ?
+        `, [category, key]);
+        
+        return setting ? JSON.parse(setting.value) : null;
+    }
+
+    async getSettings(category) {
+        const settings = await this.db.all(`
+            SELECT key, value FROM admin_settings 
+            WHERE category = ?
+        `, [category]);
+        
+        const result = {};
+        for (const setting of settings) {
+            result[setting.key] = JSON.parse(setting.value);
+        }
+        return result;
+    }
+
+    async setSetting(category, key, value, userId = null) {
+        const jsonValue = JSON.stringify(value);
+        
+        await this.db.run(`
+            INSERT OR REPLACE INTO admin_settings (category, key, value, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+        `, [category, key, jsonValue]);
+
+        if (userId) {
+            await this.logAudit(userId, 'setting_updated', { category, key, value }, null, null);
+        }
+    }
+
+    async setSettings(category, settings, userId = null) {
+        for (const [key, value] of Object.entries(settings)) {
+            await this.setSetting(category, key, value, userId);
+        }
+    }
+
+    async deleteSetting(category, key, userId = null) {
+        await this.db.run(`
+            DELETE FROM admin_settings 
+            WHERE category = ? AND key = ?
+        `, [category, key]);
+
+        if (userId) {
+            await this.logAudit(userId, 'setting_deleted', { category, key }, null, null);
+        }
+    }
     async logAudit(userId, action, details = {}, ip = null, userAgent = null) {
         try {
             await this.db.run(`
@@ -511,11 +589,11 @@ class AuthManager {
         const resetToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-        this.resetTokens.set(resetToken, {
-            userId: user.id,
-            expiresAt,
-            used: false
-        });
+        // Store reset token in database instead of memory for persistence
+        await this.db.run(`
+            INSERT INTO password_reset_tokens (token, user_id, expires_at, created_at)
+            VALUES (?, ?, ?, ?)
+        `, [resetToken, user.id, expiresAt.toISOString(), new Date().toISOString()]);
 
         // Send password reset email
         if (this.emailTransporter) {
@@ -525,11 +603,20 @@ class AuthManager {
                     to: email,
                     subject: 'InsightHub Admin - Password Reset Request',
                     html: `
-                        <h2>Password Reset Request</h2>
-                        <p>A password reset was requested for your InsightHub admin account.</p>
-                        <p><a href="${process.env.BASE_URL || 'http://localhost:3000'}/admin/reset-password?token=${resetToken}">Reset Password</a></p>
-                        <p>This link expires in 1 hour.</p>
-                        <p>If you didn't request this reset, please ignore this email.</p>
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                            <h2 style="color: #333;">Password Reset Request</h2>
+                            <p>A password reset was requested for your InsightHub admin account.</p>
+                            <div style="text-align: center; margin: 30px 0;">
+                                <a href="${process.env.BASE_URL || 'http://localhost:3000'}/admin/reset-password?token=${resetToken}" 
+                                   style="background: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                                   Reset Password
+                                </a>
+                            </div>
+                            <p><strong>This link expires in 1 hour.</strong></p>
+                            <p style="color: #666;">If you didn't request this reset, please ignore this email.</p>
+                            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                            <p style="font-size: 12px; color: #999;">InsightHub Security Team</p>
+                        </div>
                     `
                 });
                 
@@ -541,6 +628,139 @@ class AuthManager {
             console.warn('Password reset requested but email not configured');
         }
 
+        return { success: true };
+    }
+
+    /**
+     * Validate password reset token and reset password
+     */
+    async resetPassword(token, newPassword, clientInfo = {}) {
+        if (!token || !newPassword) {
+            throw new Error('Token and new password are required');
+        }
+
+        if (newPassword.length < 8) {
+            throw new Error('Password must be at least 8 characters long');
+        }
+
+        // Find valid token
+        const tokenData = await this.db.get(`
+            SELECT prt.*, u.username, u.email 
+            FROM password_reset_tokens prt
+            JOIN admin_users u ON prt.user_id = u.id
+            WHERE prt.token = ? AND prt.expires_at > datetime('now') AND prt.used = 0
+        `, [token]);
+
+        if (!tokenData) {
+            throw new Error('Invalid or expired reset token');
+        }
+
+        // Hash new password
+        const passwordHash = await bcrypt.hash(newPassword, 12);
+
+        // Update password and mark token as used
+        await this.db.run(`
+            UPDATE admin_users 
+            SET password_hash = ?, failed_login_attempts = 0, locked_until = NULL
+            WHERE id = ?
+        `, [passwordHash, tokenData.user_id]);
+
+        await this.db.run(`
+            UPDATE password_reset_tokens 
+            SET used = 1, used_at = datetime('now')
+            WHERE token = ?
+        `, [token]);
+
+        // Invalidate all sessions for this user (force re-login)
+        await this.db.run('DELETE FROM admin_sessions WHERE user_id = ?', [tokenData.user_id]);
+
+        await this.logAudit(tokenData.user_id, 'password_reset_completed', {}, clientInfo.ip, clientInfo.userAgent);
+
+        return { success: true, username: tokenData.username };
+    }
+
+    /**
+     * Update user profile
+     */
+    async updateUser(userId, updates, updatedBy) {
+        const allowedFields = ['username', 'email', 'permissions'];
+        const validUpdates = {};
+
+        // Filter and validate updates
+        for (const [field, value] of Object.entries(updates)) {
+            if (allowedFields.includes(field)) {
+                if (field === 'username' || field === 'email') {
+                    if (!value || value.trim().length === 0) {
+                        throw new Error(`${field} cannot be empty`);
+                    }
+                    
+                    if (field === 'email') {
+                        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                        if (!emailRegex.test(value)) {
+                            throw new Error('Invalid email format');
+                        }
+                    }
+
+                    // Check for duplicates (exclude current user)
+                    const existing = await this.db.get(`
+                        SELECT id FROM admin_users 
+                        WHERE ${field} = ? AND id != ?
+                    `, [value, userId]);
+
+                    if (existing) {
+                        throw new Error(`${field} already exists`);
+                    }
+
+                    validUpdates[field] = value.trim();
+                } else if (field === 'permissions') {
+                    validUpdates[field] = JSON.stringify(Array.isArray(value) ? value : [value]);
+                }
+            }
+        }
+
+        if (Object.keys(validUpdates).length === 0) {
+            throw new Error('No valid updates provided');
+        }
+
+        // Build update query
+        const fields = Object.keys(validUpdates);
+        const setClause = fields.map(field => `${field} = ?`).join(', ');
+        const values = Object.values(validUpdates);
+
+        await this.db.run(`
+            UPDATE admin_users 
+            SET ${setClause}, updated_at = datetime('now')
+            WHERE id = ?
+        `, [...values, userId]);
+
+        await this.logAudit(updatedBy, 'user_updated', { userId, updates: validUpdates }, null, null);
+
+        return { success: true };
+    }
+
+    /**
+     * Disable 2FA for a user
+     */
+    async disable2FA(userId, currentPassword) {
+        const user = await this.db.get('SELECT * FROM admin_users WHERE id = ?', [userId]);
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        // Verify current password
+        const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+        if (!validPassword) {
+            throw new Error('Invalid current password');
+        }
+
+        // Disable 2FA
+        await this.db.run(`
+            UPDATE admin_users 
+            SET two_factor_enabled = 0, two_factor_secret = NULL 
+            WHERE id = ?
+        `, [userId]);
+
+        await this.logAudit(userId, '2fa_disabled', {}, null, null);
         return { success: true };
     }
 }

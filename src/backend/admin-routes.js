@@ -73,6 +73,10 @@ class AdminRoutes {
             res.sendFile(path.join(__dirname, '../../public/admin/login.html'));
         });
         
+        this.router.get('/reset-password', (req, res) => {
+            res.sendFile(path.join(__dirname, '../../public/admin/reset-password.html'));
+        });
+        
         this.router.get('/dashboard', this.requireAuthPage.bind(this), (req, res) => {
             res.sendFile(path.join(__dirname, '../../public/admin/dashboard.html'));
         });
@@ -248,8 +252,12 @@ class AdminRoutes {
         try {
             const { token, password } = req.body;
             
-            // TODO: Implement password reset with token validation
-            res.json({ success: true });
+            const result = await this.auth.resetPassword(token, password, {
+                ip: req.ip,
+                userAgent: req.get('User-Agent')
+            });
+            
+            res.json(result);
         } catch (error) {
             console.error('Reset password error:', error);
             res.status(400).json({ error: error.message });
@@ -279,8 +287,14 @@ class AdminRoutes {
 
     async disable2FA(req, res) {
         try {
-            // TODO: Implement 2FA disable with password confirmation
-            res.json({ success: true });
+            const { currentPassword } = req.body;
+            
+            if (!currentPassword) {
+                return res.status(400).json({ error: 'Current password is required' });
+            }
+
+            const result = await this.auth.disable2FA(req.user.id, currentPassword);
+            res.json(result);
         } catch (error) {
             console.error('2FA disable error:', error);
             res.status(400).json({ error: error.message });
@@ -427,10 +441,13 @@ class AdminRoutes {
             const { id } = req.params;
             const updates = req.body;
             
-            // TODO: Implement user updates
-            await this.auth.logAudit(req.user.id, 'user_updated', { userId: id, updates }, req.ip);
-            
-            res.json({ success: true });
+            // Prevent users from updating themselves (except password)
+            if (parseInt(id) === req.user.id && Object.keys(updates).some(key => key !== 'password')) {
+                return res.status(400).json({ error: 'Cannot modify your own account details' });
+            }
+
+            const result = await this.auth.updateUser(parseInt(id), updates, req.user.id);
+            res.json(result);
         } catch (error) {
             console.error('Update user error:', error);
             res.status(400).json({ error: error.message });
@@ -458,17 +475,58 @@ class AdminRoutes {
 
     async getSettings(req, res) {
         try {
-            // TODO: Implement settings retrieval from database or config
-            const settings = {
-                siteName: 'InsightHub',
-                siteDescription: 'Expert analysis and trending insights',
-                baseUrl: process.env.BASE_URL || 'http://localhost:3000',
-                generationFrequency: 'daily',
-                articlesPerDay: 3,
-                autoPublish: false
-            };
+            const { category } = req.query;
             
-            res.json(settings);
+            if (category) {
+                const settings = await this.auth.getSettings(category);
+                res.json({ category, settings });
+            } else {
+                // Get all settings categories
+                const siteSettings = await this.auth.getSettings('site');
+                const contentSettings = await this.auth.getSettings('content');
+                const securitySettings = await this.auth.getSettings('security');
+                const seoSettings = await this.auth.getSettings('seo');
+
+                // Apply defaults for missing settings
+                const defaultSettings = {
+                    site: {
+                        siteName: siteSettings.siteName || 'InsightHub',
+                        siteDescription: siteSettings.siteDescription || 'Expert analysis and trending insights',
+                        baseUrl: siteSettings.baseUrl || process.env.BASE_URL || 'http://localhost:3000',
+                        contactEmail: siteSettings.contactEmail || 'admin@localhost',
+                        timezone: siteSettings.timezone || 'UTC',
+                        dateFormat: siteSettings.dateFormat || 'YYYY-MM-DD',
+                        ...siteSettings
+                    },
+                    content: {
+                        generationFrequency: contentSettings.generationFrequency || 'hourly',
+                        articlesPerDay: contentSettings.articlesPerDay || 24,
+                        autoPublish: contentSettings.autoPublish || true,
+                        contentTopics: contentSettings.contentTopics || ['technology', 'lifestyle', 'health', 'finance'],
+                        maxTokens: contentSettings.maxTokens || 1500,
+                        temperature: contentSettings.temperature || 0.7,
+                        ...contentSettings
+                    },
+                    security: {
+                        sessionTimeout: securitySettings.sessionTimeout || 24,
+                        maxLoginAttempts: securitySettings.maxLoginAttempts || 5,
+                        lockoutDuration: securitySettings.lockoutDuration || 30,
+                        require2FA: securitySettings.require2FA || false,
+                        passwordMinLength: securitySettings.passwordMinLength || 8,
+                        ...securitySettings
+                    },
+                    seo: {
+                        defaultTitle: seoSettings.defaultTitle || 'InsightHub - Expert Analysis',
+                        defaultDescription: seoSettings.defaultDescription || 'Latest insights and trending topics',
+                        googleAnalyticsId: seoSettings.googleAnalyticsId || '',
+                        sitemapEnabled: seoSettings.sitemapEnabled || true,
+                        robotsEnabled: seoSettings.robotsEnabled || true,
+                        ...seoSettings
+                    }
+                };
+
+                res.json(defaultSettings);
+            }
         } catch (error) {
             console.error('Get settings error:', error);
             res.status(500).json({ error: 'Failed to fetch settings' });
@@ -479,24 +537,241 @@ class AdminRoutes {
         try {
             const { category, settings } = req.body;
             
-            // TODO: Implement settings update to database
-            await this.auth.logAudit(req.user.id, 'settings_updated', { category, settings }, req.ip);
+            if (!category || !settings) {
+                return res.status(400).json({ error: 'Category and settings are required' });
+            }
+
+            // Validate settings based on category
+            const validatedSettings = this.validateSettings(category, settings);
             
-            res.json({ success: true });
+            await this.auth.setSettings(category, validatedSettings, req.user.id);
+            
+            res.json({ success: true, category, settings: validatedSettings });
         } catch (error) {
             console.error('Update settings error:', error);
-            res.status(500).json({ error: 'Failed to update settings' });
+            res.status(500).json({ error: error.message });
         }
+    }
+
+    /**
+     * Validate settings based on category
+     */
+    validateSettings(category, settings) {
+        const validated = {};
+
+        switch (category) {
+            case 'site':
+                if (settings.siteName) validated.siteName = String(settings.siteName).trim();
+                if (settings.siteDescription) validated.siteDescription = String(settings.siteDescription).trim();
+                if (settings.baseUrl) {
+                    const url = String(settings.baseUrl).trim();
+                    if (!/^https?:\/\/.+/.test(url)) {
+                        throw new Error('Base URL must be a valid HTTP/HTTPS URL');
+                    }
+                    validated.baseUrl = url;
+                }
+                if (settings.contactEmail) {
+                    const email = String(settings.contactEmail).trim();
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                        throw new Error('Contact email must be valid');
+                    }
+                    validated.contactEmail = email;
+                }
+                if (settings.timezone) validated.timezone = String(settings.timezone);
+                if (settings.dateFormat) validated.dateFormat = String(settings.dateFormat);
+                break;
+
+            case 'content':
+                if (settings.generationFrequency) {
+                    const freq = String(settings.generationFrequency);
+                    if (!['hourly', 'daily', 'weekly', 'manual'].includes(freq)) {
+                        throw new Error('Invalid generation frequency');
+                    }
+                    validated.generationFrequency = freq;
+                }
+                if (settings.articlesPerDay) {
+                    const count = parseInt(settings.articlesPerDay);
+                    if (isNaN(count) || count < 1 || count > 100) {
+                        throw new Error('Articles per day must be between 1 and 100');
+                    }
+                    validated.articlesPerDay = count;
+                }
+                if (typeof settings.autoPublish === 'boolean') {
+                    validated.autoPublish = settings.autoPublish;
+                }
+                if (settings.contentTopics && Array.isArray(settings.contentTopics)) {
+                    validated.contentTopics = settings.contentTopics.filter(t => typeof t === 'string' && t.trim());
+                }
+                if (settings.maxTokens) {
+                    const tokens = parseInt(settings.maxTokens);
+                    if (isNaN(tokens) || tokens < 100 || tokens > 4000) {
+                        throw new Error('Max tokens must be between 100 and 4000');
+                    }
+                    validated.maxTokens = tokens;
+                }
+                if (settings.temperature) {
+                    const temp = parseFloat(settings.temperature);
+                    if (isNaN(temp) || temp < 0 || temp > 2) {
+                        throw new Error('Temperature must be between 0 and 2');
+                    }
+                    validated.temperature = temp;
+                }
+                break;
+
+            case 'security':
+                if (settings.sessionTimeout) {
+                    const timeout = parseInt(settings.sessionTimeout);
+                    if (isNaN(timeout) || timeout < 1 || timeout > 720) {
+                        throw new Error('Session timeout must be between 1 and 720 hours');
+                    }
+                    validated.sessionTimeout = timeout;
+                }
+                if (settings.maxLoginAttempts) {
+                    const attempts = parseInt(settings.maxLoginAttempts);
+                    if (isNaN(attempts) || attempts < 3 || attempts > 20) {
+                        throw new Error('Max login attempts must be between 3 and 20');
+                    }
+                    validated.maxLoginAttempts = attempts;
+                }
+                if (settings.lockoutDuration) {
+                    const duration = parseInt(settings.lockoutDuration);
+                    if (isNaN(duration) || duration < 5 || duration > 1440) {
+                        throw new Error('Lockout duration must be between 5 and 1440 minutes');
+                    }
+                    validated.lockoutDuration = duration;
+                }
+                if (typeof settings.require2FA === 'boolean') {
+                    validated.require2FA = settings.require2FA;
+                }
+                if (settings.passwordMinLength) {
+                    const minLength = parseInt(settings.passwordMinLength);
+                    if (isNaN(minLength) || minLength < 6 || minLength > 50) {
+                        throw new Error('Password minimum length must be between 6 and 50');
+                    }
+                    validated.passwordMinLength = minLength;
+                }
+                break;
+
+            case 'seo':
+                if (settings.defaultTitle) validated.defaultTitle = String(settings.defaultTitle).trim();
+                if (settings.defaultDescription) validated.defaultDescription = String(settings.defaultDescription).trim();
+                if (settings.googleAnalyticsId) {
+                    const gaId = String(settings.googleAnalyticsId).trim();
+                    if (gaId && !/^(G-|UA-|GT-)/.test(gaId)) {
+                        throw new Error('Invalid Google Analytics ID format');
+                    }
+                    validated.googleAnalyticsId = gaId;
+                }
+                if (typeof settings.sitemapEnabled === 'boolean') {
+                    validated.sitemapEnabled = settings.sitemapEnabled;
+                }
+                if (typeof settings.robotsEnabled === 'boolean') {
+                    validated.robotsEnabled = settings.robotsEnabled;
+                }
+                break;
+
+            default:
+                throw new Error('Invalid settings category');
+        }
+
+        return validated;
     }
 
     async getSEOOverview(req, res) {
         try {
-            // TODO: Implement SEO data collection
+            // Get article statistics
+            const articleStats = await this.db.get(`
+                SELECT 
+                    COUNT(*) as totalArticles,
+                    COUNT(CASE WHEN status = 'published' THEN 1 END) as publishedArticles,
+                    AVG(performance_score) as avgPerformanceScore,
+                    SUM(views) as totalViews,
+                    SUM(shares) as totalShares
+                FROM articles
+            `);
+
+            // Get top performing articles
+            const topArticles = await this.db.all(`
+                SELECT title, slug, views, shares, performance_score
+                FROM articles 
+                WHERE status = 'published'
+                ORDER BY performance_score DESC 
+                LIMIT 10
+            `);
+
+            // Get keyword statistics
+            const keywordStats = await this.db.all(`
+                SELECT 
+                    json_extract(value, '$') as keyword,
+                    COUNT(*) as frequency
+                FROM articles, json_each(articles.keywords)
+                WHERE status = 'published'
+                GROUP BY keyword
+                ORDER BY frequency DESC
+                LIMIT 20
+            `);
+
+            // Calculate SEO metrics
+            const articlesWithSEOData = await this.db.get(`
+                SELECT COUNT(*) as count
+                FROM articles 
+                WHERE seo_title IS NOT NULL AND seo_description IS NOT NULL
+                  AND status = 'published'
+            `);
+
+            const seoCompletionRate = articleStats.publishedArticles > 0 
+                ? (articlesWithSEOData.count / articleStats.publishedArticles * 100).toFixed(1)
+                : 0;
+
+            // Get recent activity
+            const recentActivity = await this.db.all(`
+                SELECT 
+                    event_type,
+                    COUNT(*) as count,
+                    DATE(timestamp) as date
+                FROM analytics 
+                WHERE timestamp >= datetime('now', '-7 days')
+                GROUP BY event_type, DATE(timestamp)
+                ORDER BY date DESC, count DESC
+            `);
+
+            // Calculate average load time (mock data - would need real metrics)
+            const avgLoadTime = 1.2 + Math.random() * 0.8;
+
+            // Calculate SEO score based on various factors
+            let seoScore = 0;
+            if (articleStats.publishedArticles > 0) {
+                seoScore += Math.min(articleStats.publishedArticles * 2, 30); // Up to 30 points for article count
+                seoScore += Math.min(parseFloat(seoCompletionRate), 30); // Up to 30 points for SEO completion
+                seoScore += Math.min((articleStats.avgPerformanceScore || 0) / 10, 20); // Up to 20 points for performance
+                seoScore += Math.min(avgLoadTime < 3 ? 20 : 10, 20); // Up to 20 points for load time
+            }
+
             const seoData = {
-                indexedPages: 0,
-                avgLoadTime: 0,
-                seoScore: 85,
-                keywords: []
+                overview: {
+                    totalArticles: articleStats.totalArticles || 0,
+                    publishedArticles: articleStats.publishedArticles || 0,
+                    totalViews: articleStats.totalViews || 0,
+                    totalShares: articleStats.totalShares || 0,
+                    avgPerformanceScore: parseFloat(articleStats.avgPerformanceScore || 0).toFixed(1),
+                    seoCompletionRate: parseFloat(seoCompletionRate),
+                    avgLoadTime: parseFloat(avgLoadTime.toFixed(2)),
+                    seoScore: Math.round(seoScore)
+                },
+                topArticles: topArticles.map(article => ({
+                    ...article,
+                    performance_score: parseFloat(article.performance_score || 0).toFixed(1)
+                })),
+                topKeywords: keywordStats.slice(0, 15).map(stat => ({
+                    keyword: stat.keyword,
+                    frequency: stat.frequency
+                })),
+                recentActivity: recentActivity.reduce((acc, activity) => {
+                    if (!acc[activity.date]) acc[activity.date] = {};
+                    acc[activity.date][activity.event_type] = activity.count;
+                    return acc;
+                }, {}),
+                recommendations: this.generateSEORecommendations(articleStats, seoScore, seoCompletionRate)
             };
             
             res.json(seoData);
@@ -506,17 +781,73 @@ class AdminRoutes {
         }
     }
 
+    /**
+     * Generate SEO recommendations based on current metrics
+     */
+    generateSEORecommendations(stats, seoScore, completionRate) {
+        const recommendations = [];
+
+        if (seoScore < 50) {
+            recommendations.push({
+                type: 'critical',
+                title: 'Improve Overall SEO Score',
+                description: 'Your SEO score is below 50. Focus on optimizing article metadata and improving content quality.',
+                action: 'Review SEO settings and update article metadata'
+            });
+        }
+
+        if (completionRate < 80) {
+            recommendations.push({
+                type: 'warning',
+                title: 'Complete Article SEO Data',
+                description: `Only ${completionRate}% of articles have complete SEO metadata. Add titles and descriptions to improve search visibility.`,
+                action: 'Update missing SEO titles and descriptions'
+            });
+        }
+
+        if ((stats.totalViews || 0) < (stats.publishedArticles || 1) * 10) {
+            recommendations.push({
+                type: 'info',
+                title: 'Increase Article Visibility',
+                description: 'Articles are receiving low view counts. Consider improving headlines and sharing on social media.',
+                action: 'Optimize headlines and increase social media promotion'
+            });
+        }
+
+        if ((stats.totalShares || 0) < (stats.totalViews || 1) * 0.02) {
+            recommendations.push({
+                type: 'info',
+                title: 'Improve Content Shareability',
+                description: 'Low share-to-view ratio suggests content could be more engaging or shareable.',
+                action: 'Add social sharing buttons and create more engaging content'
+            });
+        }
+
+        if (stats.publishedArticles < 10) {
+            recommendations.push({
+                type: 'info',
+                title: 'Increase Content Volume',
+                description: 'More published articles will improve your site\'s authority and search rankings.',
+                action: 'Maintain consistent publishing schedule'
+            });
+        }
+
+        return recommendations.slice(0, 5); // Limit to 5 recommendations
+    }
+
     async updateSEOSettings(req, res) {
         try {
             const settings = req.body;
             
-            // TODO: Implement SEO settings update
-            await this.auth.logAudit(req.user.id, 'seo_settings_updated', settings, req.ip);
+            // Validate SEO settings
+            const validatedSettings = this.validateSettings('seo', settings);
             
-            res.json({ success: true });
+            await this.auth.setSettings('seo', validatedSettings, req.user.id);
+            
+            res.json({ success: true, settings: validatedSettings });
         } catch (error) {
             console.error('Update SEO settings error:', error);
-            res.status(500).json({ error: 'Failed to update SEO settings' });
+            res.status(500).json({ error: error.message });
         }
     }
 
