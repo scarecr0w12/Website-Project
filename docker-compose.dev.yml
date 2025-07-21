@@ -1,0 +1,78 @@
+services:
+  # Development web server with hot reload
+  web:
+    build: 
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: viral-content-web-dev
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - HOST=0.0.0.0
+      - API_BASE_URL=http://127.0.0.1:3000/api/v1
+      - DATABASE_PATH=/app/data/articles.db
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - CONTENT_GENERATION_ENABLED=${CONTENT_GENERATION_ENABLED:-true}
+      - CONTENT_GENERATION_INTERVAL=${CONTENT_GENERATION_INTERVAL:-3600000}
+      - MAX_ARTICLES_PER_DAY=${MAX_ARTICLES_PER_DAY:-24}
+      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      - ANALYTICS_ENABLED=${ANALYTICS_ENABLED:-true}
+      - PERFORMANCE_TRACKING=${PERFORMANCE_TRACKING:-true}
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-1000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      - /app/node_modules
+      # Persistent data
+      - ./data:/app/data
+      - ./generated-content:/app/generated-content
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: npm run dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - viral-content-dev-network
+
+  # Development tools container
+  tools:
+    build: 
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: viral-content-tools-dev
+    environment:
+      - NODE_ENV=development
+      - API_BASE_URL=http://web:3000/api/v1
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - ./generated-content:/app/generated-content
+      - ./logs:/app/logs
+    command: tail -f /dev/null  # Keep container running
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - viral-content-dev-network
+    profiles:
+      - tools
+
+networks:
+  viral-content-dev-network:
+    driver: bridge
+    name: viral-content-dev-network

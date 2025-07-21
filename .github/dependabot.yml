@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Enable version updates for npm
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "dependabot[bot]"
+    assignees:
+      - "dependabot[bot]"
+    commit-message:
+      prefix: "npm"
+      include: "scope"
+    
+  # Enable version updates for Docker
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "dependabot[bot]"
+    commit-message:
+      prefix: "docker"

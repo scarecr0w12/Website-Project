@@ -1,0 +1,132 @@
+services:
+  # Main application server
+  web:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: viral-content-web
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3000
+      - HOST=0.0.0.0
+      - DATABASE_PATH=/app/data/articles.db
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - CONTENT_GENERATION_ENABLED=${CONTENT_GENERATION_ENABLED:-true}
+      - CONTENT_GENERATION_INTERVAL=${CONTENT_GENERATION_INTERVAL:-3600000}
+      - MAX_ARTICLES_PER_DAY=${MAX_ARTICLES_PER_DAY:-24}
+      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+      - ANALYTICS_ENABLED=${ANALYTICS_ENABLED:-true}
+      - PERFORMANCE_TRACKING=${PERFORMANCE_TRACKING:-true}
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-100}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      # Persistent database storage
+      - ./data:/app/data
+      # Generated content backup
+      - ./generated-content:/app/generated-content
+      # Logs directory
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      - content-scheduler
+    networks:
+      - viral-content-network
+
+  # Content generation scheduler service
+  content-scheduler:
+    build: 
+      context: .
+      dockerfile: Dockerfile.scheduler
+    container_name: viral-content-scheduler
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - API_BASE_URL=http://web:3000/api/v1
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1500}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - CONTENT_GENERATION_INTERVAL=${CONTENT_GENERATION_INTERVAL:-3600000}
+      - MAX_ARTICLES_PER_DAY=${MAX_ARTICLES_PER_DAY:-24}
+      - CONTENT_TOPICS=${CONTENT_TOPICS:-technology,lifestyle,health,finance,entertainment}
+    volumes:
+      # Share generated content with main app
+      - ./generated-content:/app/generated-content
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - viral-content-network
+
+  # Reverse proxy for production (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: viral-content-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    restart: unless-stopped
+    depends_on:
+      - web
+    networks:
+      - viral-content-network
+    profiles:
+      - production
+
+  # Monitoring and analytics (optional)
+  analytics:
+    image: umami/umami:postgresql-latest
+    container_name: viral-content-analytics
+    environment:
+      - DATABASE_URL=postgresql://umami:umami@analytics-db:5432/umami
+      - HASH_SALT=${ANALYTICS_HASH_SALT:-your-random-salt}
+    ports:
+      - "3001:3000"
+    depends_on:
+      - analytics-db
+    restart: unless-stopped
+    networks:
+      - viral-content-network
+    profiles:
+      - analytics
+
+  # Analytics database
+  analytics-db:
+    image: postgres:15-alpine
+    container_name: viral-content-analytics-db
+    environment:
+      - POSTGRES_DB=umami
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=umami
+    volumes:
+      - analytics-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - viral-content-network
+    profiles:
+      - analytics
+
+networks:
+  viral-content-network:
+    driver: bridge
+    name: viral-content-network
+
+volumes:
+  analytics-data:
+    driver: local

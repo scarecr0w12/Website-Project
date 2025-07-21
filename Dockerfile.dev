@@ -1,0 +1,30 @@
+# Development Dockerfile with hot reload and development tools
+FROM node:18-alpine
+
+# Install curl for health checks
+RUN apk add --no-cache curl
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json (if available)
+COPY package*.json ./
+
+# Install all dependencies (including dev dependencies)
+RUN npm ci
+
+# Create app directory (node user already exists with UID 1000)
+RUN mkdir -p /app/data /app/generated-content /app/logs
+
+# Copy the rest of the application code
+COPY . .
+
+# Change ownership of the app directory to the node user
+RUN chown -R node:node /app
+USER node
+
+# Expose the port the app runs on
+EXPOSE 3000
+
+# Default command to start the development server
+CMD ["npm", "run", "dev"]
