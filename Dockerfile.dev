@@ -4,7 +4,7 @@
 # =============================================================================
 # Base development stage
 # =============================================================================
-FROM node:18-alpine AS base-dev
+FROM node:24-alpine AS base-dev
 
 # Install system dependencies for development
 RUN apk add --no-cache \
